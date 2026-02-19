@@ -1,0 +1,58 @@
+services:
+  - type: web
+    name: slide-master-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+```
+
+---
+
+### 2. Render.com da sozlash
+
+**Dashboard → New → Web Service** ni bosing va:
+
+| Sozlama | Qiymat |
+|---|---|
+| **Build Command** | `pip install -r requirements.txt` |
+| **Start Command** | `python bot.py` |
+| **Port** | `10000` |
+
+---
+
+### 3. Environment Variables (muhim!)
+
+Render → **Environment** bo'limiga quyidagilarni qo'shing:
+
+| O'zgaruvchi | Qiymat |
+|---|---|
+| `BOT_TOKEN` | Telegram bot tokeni |
+| `GROQ_API_KEY` | Groq API kaliti |
+| `ADMIN_ID` | Sizning Telegram ID |
+| `DATABASE_URL` | PostgreSQL URL |
+
+> `RENDER_EXTERNAL_URL` — Render **avtomatik** beradi, qo'shishga hojat yo'q ✅
+
+---
+
+### 4. PostgreSQL DB yaratish
+
+Render → **New → PostgreSQL** → yarating.  
+Keyin `DATABASE_URL` ni ko'chirib, Web Service Environment Variables ga qo'shing.
+
+---
+
+### 5. Webhook muammosini oldini olish
+
+Bot kodida webhook URL to'g'ri o'rnatilgan (`RENDER_EXTERNAL_URL` dan olinadi). Lekin Telegram eski webhookni o'chirish uchun bir marta quyidagi URL ga kiring:
+```
+https://api.telegram.org/bot<BOT_TOKEN>/deleteWebhook
