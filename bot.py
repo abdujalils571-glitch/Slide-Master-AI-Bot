@@ -597,13 +597,13 @@ async def main_handler(message: types.Message, state: FSMContext):
         status    = "⭐ VIP PREMIUM" if user['is_premium'] else "👤 Oddiy"
         ref_count = await db.get_referral_count(uid)
         await message.answer(
-            f"📊 **SHAXSIY KABINET**\n\n"
-            f"👤 Ism: {user['first_name'] or \"Noma'lum\"}\n"
-            f"🆔 ID: `{uid}`\n"
-            f"💰 Balans: **{user['balance']} slayd**\n"
-            f"👥 Taklif qilingan: **{ref_count} ta**\n"
-            f"🏷 Status: **{status}**\n"
-            f"📅 Ro'yxatdan o'tgan: {str(user['created_at'])[:10]}"
+          f"📊 **SHAXSIY KABINET**\n\n"
+          f"👤 Ism: {name}\n"
+          f"🆔 ID: `{uid}`\n"
+          f"💰 Balans: **{user['balance']} slayd**\n"
+          f"👥 Taklif qilingan: **{ref_count} ta**\n"
+          f"🏷 Status: **{status}**\n"
+          f"📅 Ro'yxatdan o'tgan: {date}"
         )
 
     elif text == btns[2]:  # Taklif
