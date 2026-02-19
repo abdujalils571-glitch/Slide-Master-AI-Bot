@@ -598,7 +598,7 @@ async def main_handler(message: types.Message, state: FSMContext):
         ref_count = await db.get_referral_count(uid)
         await message.answer(
             f"📊 **SHAXSIY KABINET**\n\n"
-            f"👤 Ism: {user['first_name'] or 'Noma\\'lum'}\n"
+           f"👤 Ism: {user['first_name'] or \"Noma'lum\"}\n"
             f"🆔 ID: `{uid}`\n"
             f"💰 Balans: **{user['balance']} slayd**\n"
             f"👥 Taklif qilingan: **{ref_count} ta**\n"
