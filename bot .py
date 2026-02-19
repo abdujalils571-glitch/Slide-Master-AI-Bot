@@ -1,5 +1,4 @@
-
-import psycopg2import logging
+import logging
 import asyncio
 import os
 import re
@@ -7,7 +6,8 @@ import json
 import sys
 import time
 import zipfile
-import asyncpg
+import psycopg2
+import psycopg2.extras
 from aiohttp import web
 from groq import AsyncGroq
 from aiogram import Bot, Dispatcher, types, F
@@ -153,129 +153,186 @@ LANGS = {
     }
 }
 
-# --- 4. PostgreSQL DATABASE MANAGER ---
+# --- 4. PostgreSQL DATABASE MANAGER (psycopg2) ---
 class Database:
     def __init__(self, dsn: str):
         self.dsn  = dsn
-        self.pool = None  # asyncpg connection pool
+        self.conn = None
+
+    def _connect(self):
+        """Yangi ulanish yaratish"""
+        return psycopg2.connect(self.dsn, sslmode='require', cursor_factory=psycopg2.extras.RealDictCursor)
+
+    def _exec(self, sql, params=(), fetch=None):
+        """Sync DB operatsiyasi — asyncio executor orqali chaqiriladi"""
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                conn.commit()
+                if fetch == 'one':
+                    return cur.fetchone()
+                if fetch == 'all':
+                    return cur.fetchall()
+                if fetch == 'val':
+                    row = cur.fetchone()
+                    return list(row.values())[0] if row else None
+                return None
+        finally:
+            conn.close()
+
+    async def _run(self, fn, *args):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, fn, *args)
 
     async def init(self):
-        # SSL sertifikat tekshiruvsiz ulanish (Render PostgreSQL uchun)
-        self.pool = await asyncpg.create_pool(
-            self.dsn,
-            ssl='require',
-            min_size=2,
-            max_size=10
-        )
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id          BIGINT PRIMARY KEY,
-                    username    TEXT,
-                    first_name  TEXT,
-                    last_name   TEXT,
-                    lang        TEXT    DEFAULT 'uz',
-                    is_premium  INTEGER DEFAULT 0,
-                    balance     INTEGER DEFAULT 2,
-                    invited_by  BIGINT,
-                    created_at  TIMESTAMP DEFAULT NOW(),
-                    last_active TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS referrals (
-                    id          SERIAL PRIMARY KEY,
-                    referrer_id BIGINT,
-                    referred_id BIGINT UNIQUE,
-                    bonus_given INTEGER DEFAULT 0,
-                    created_at  TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS payments (
-                    id            SERIAL PRIMARY KEY,
-                    user_id       BIGINT,
-                    amount        INTEGER,
-                    package_type  TEXT,
-                    screenshot_id TEXT,
-                    status        TEXT DEFAULT 'pending',
-                    created_at    TIMESTAMP DEFAULT NOW()
-                )
-            """)
+        def _init():
+            conn = self._connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS users (
+                            id          BIGINT PRIMARY KEY,
+                            username    TEXT,
+                            first_name  TEXT,
+                            last_name   TEXT,
+                            lang        TEXT    DEFAULT 'uz',
+                            is_premium  INTEGER DEFAULT 0,
+                            balance     INTEGER DEFAULT 2,
+                            invited_by  BIGINT,
+                            created_at  TIMESTAMP DEFAULT NOW(),
+                            last_active TIMESTAMP DEFAULT NOW()
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS referrals (
+                            id          SERIAL PRIMARY KEY,
+                            referrer_id BIGINT,
+                            referred_id BIGINT UNIQUE,
+                            bonus_given INTEGER DEFAULT 0,
+                            created_at  TIMESTAMP DEFAULT NOW()
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS payments (
+                            id            SERIAL PRIMARY KEY,
+                            user_id       BIGINT,
+                            amount        INTEGER,
+                            package_type  TEXT,
+                            screenshot_id TEXT,
+                            status        TEXT DEFAULT 'pending',
+                            created_at    TIMESTAMP DEFAULT NOW()
+                        )
+                    """)
+                conn.commit()
+            finally:
+                conn.close()
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _init)
         logger.info("✅ PostgreSQL baza tayyor.")
 
     async def close(self):
-        if self.pool:
-            await self.pool.close()
+        pass  # Har operatsiyada ulanish ochib/yopiladi
 
     async def get_user(self, user_id: int):
-        async with self.pool.acquire() as conn:
-            return await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+        def _get():
+            return self._exec("SELECT * FROM users WHERE id = %s", (user_id,), fetch='one')
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _get)
 
     async def add_user(self, user_id, username, first_name, last_name, referrer_id=None):
-        async with self.pool.acquire() as conn:
+        def _add():
+            conn = self._connect()
             try:
-                await conn.execute("""
-                    INSERT INTO users (id, username, first_name, last_name, invited_by, balance)
-                    VALUES ($1, $2, $3, $4, $5, 2)
-                """, user_id, username, first_name, last_name, referrer_id)
-                if referrer_id:
-                    await conn.execute("""
-                        INSERT INTO referrals (referrer_id, referred_id)
-                        VALUES ($1, $2) ON CONFLICT (referred_id) DO NOTHING
-                    """, referrer_id, user_id)
-                return True
-            except asyncpg.UniqueViolationError:
-                await conn.execute(
-                    "UPDATE users SET last_active = NOW() WHERE id = $1", user_id
-                )
-                return False
+                with conn.cursor() as cur:
+                    try:
+                        cur.execute("""
+                            INSERT INTO users (id, username, first_name, last_name, invited_by, balance)
+                            VALUES (%s, %s, %s, %s, %s, 2)
+                        """, (user_id, username, first_name, last_name, referrer_id))
+                        if referrer_id:
+                            cur.execute("""
+                                INSERT INTO referrals (referrer_id, referred_id)
+                                VALUES (%s, %s) ON CONFLICT (referred_id) DO NOTHING
+                            """, (referrer_id, user_id))
+                        conn.commit()
+                        return True
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback()
+                        cur.execute("UPDATE users SET last_active = NOW() WHERE id = %s", (user_id,))
+                        conn.commit()
+                        return False
+            finally:
+                conn.close()
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _add)
 
     async def update_balance(self, user_id: int, amount: int):
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE id = $2", amount, user_id
-            )
+        def _upd():
+            self._exec("UPDATE users SET balance = balance + %s WHERE id = %s", (amount, user_id))
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _upd)
 
     async def set_premium(self, user_id: int):
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET is_premium = 1 WHERE id = $1", user_id
-            )
+        def _upd():
+            self._exec("UPDATE users SET is_premium = 1 WHERE id = %s", (user_id,))
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _upd)
 
     async def update_lang(self, user_id: int, lang: str):
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET lang = $1 WHERE id = $2", lang, user_id
-            )
+        def _upd():
+            self._exec("UPDATE users SET lang = %s WHERE id = %s", (lang, user_id))
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _upd)
 
     async def get_referral_count(self, user_id: int) -> int:
-        async with self.pool.acquire() as conn:
-            res = await conn.fetchval(
-                "SELECT COUNT(*) FROM referrals WHERE referrer_id = $1", user_id
-            )
-            return res or 0
+        def _get():
+            return self._exec("SELECT COUNT(*) AS cnt FROM referrals WHERE referrer_id = %s", (user_id,), fetch='one')
+        loop = asyncio.get_event_loop()
+        row = await loop.run_in_executor(None, _get)
+        return row['cnt'] if row else 0
 
     async def get_all_users(self):
-        async with self.pool.acquire() as conn:
-            return await conn.fetch("SELECT id FROM users")
+        def _get():
+            return self._exec("SELECT id FROM users", fetch='all')
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _get)
 
     async def get_stats(self):
-        async with self.pool.acquire() as conn:
-            row     = await conn.fetchrow("SELECT COUNT(*) AS total_users, COALESCE(SUM(balance),0) AS total_slides FROM users")
-            premium = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_premium = 1")
-            return {
-                'total_users':   row['total_users'],
-                'total_slides':  row['total_slides'],
-                'premium_users': premium
-            }
+        def _get():
+            conn = self._connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) AS total_users, COALESCE(SUM(balance),0) AS total_slides FROM users")
+                    row = cur.fetchone()
+                    cur.execute("SELECT COUNT(*) AS cnt FROM users WHERE is_premium = 1")
+                    prow = cur.fetchone()
+                return {
+                    'total_users':   row['total_users'],
+                    'total_slides':  row['total_slides'],
+                    'premium_users': prow['cnt']
+                }
+            finally:
+                conn.close()
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _get)
 
     async def add_payment(self, user_id, amount, package_type, screenshot_id):
-        async with self.pool.acquire() as conn:
-            return await conn.fetchval("""
-                INSERT INTO payments (user_id, amount, package_type, screenshot_id)
-                VALUES ($1, $2, $3, $4) RETURNING id
-            """, user_id, amount, package_type, screenshot_id)
+        def _add():
+            conn = self._connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO payments (user_id, amount, package_type, screenshot_id)
+                        VALUES (%s, %s, %s, %s) RETURNING id
+                    """, (user_id, amount, package_type, screenshot_id))
+                    pid = cur.fetchone()['id']
+                conn.commit()
+                return pid
+            finally:
+                conn.close()
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _add)
 
 db = Database(DATABASE_URL)
 
