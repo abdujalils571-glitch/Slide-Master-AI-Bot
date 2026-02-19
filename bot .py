@@ -1,4 +1,5 @@
-import logging
+
+import psycopg2import logging
 import asyncio
 import os
 import re
